@@ -27,10 +27,16 @@ import (
 	"github.com/Azure/kubernetes-kms/pkg/version"
 
 	"google.golang.org/grpc"
+	"monis.app/mlog"
+
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 	kmsv1 "k8s.io/kms/apis/v1beta1"
 	kmsv2 "k8s.io/kms/apis/v2"
-	"monis.app/mlog"
 )
 
 var (
@@ -56,8 +62,9 @@ var (
 	proxyAddress = flag.String("proxy-address", "", "proxy address")
 	proxyPort    = flag.Int("proxy-port", 7788, "port for proxy")
 
-	encryptedClusterSeedFile     = flag.String("encrypted-cluster-seed-file", "", "File with encrypted cluster seed used to generate KEKs to encrypt API server DEK seeds")
-	generateEncryptedClusterSeed = flag.String("generate-encrypted-cluster-seed-file-for-tests", "", "File to write encrypted cluster seed")
+	encryptedClusterSeedFile                = flag.String("encrypted-cluster-seed-file", "", "File with encrypted cluster seed used to generate KEKs to encrypt API server DEK seeds")
+	generateEncryptedClusterSeedInNamespace = flag.String("generate-encrypted-cluster-seed-in-namespace", "", "FLag indicating to generate a new encrypted cluster seed and store it in the given namespace. "+
+		"The value is the namespace to store the secret in. The secret name will be 'azure-kms-provider-seed-active-<namespace>'.")
 )
 
 func main() {
@@ -125,30 +132,66 @@ func setupKMSPlugin() error {
 		return fmt.Errorf("failed to create key vault client: %w", err)
 	}
 
-	if len(*generateEncryptedClusterSeed) != 0 {
-		clusterSeed, err := aes.GenerateKey(sha256.BlockSize) // larger seeds will be hashed down to this size
-		if err != nil {
-			return fmt.Errorf("failed to generate cluster seed: %w", err)
-		}
+	// Generate a new encrypted cluster seed and store it in a secret in the given namespace.
+	// If the secret already exists, do not generate a new one.
+	if generateEncryptedClusterSeedInNamespace != nil && len(*generateEncryptedClusterSeedInNamespace) != 0 {
+		namespace := *generateEncryptedClusterSeedInNamespace
 
-		ctx, cancel := context.WithTimeout(ctx, time.Minute)
+		// Generate a kubeconfig
+		kubeconfig, err := rest.InClusterConfig()
+		if err != nil {
+			return fmt.Errorf("failed to get kubeconfig: %w", err)
+		}
+		kubeClient, err := kubernetes.NewForConfig(kubeconfig)
+		if err != nil {
+			return fmt.Errorf("failed to make kube client: %w", err)
+		}
+		apiContext, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
 
-		encryptedClusterSeedResp, err := kvClient.Encrypt(ctx, clusterSeed, azkeys.EncryptionAlgorithmRSAOAEP256)
+		// Check if the secret already exists, if it does, do not generate a new one. If it does not, generate a new
+		// seed and store it in a secret.
+		secretName := fmt.Sprintf("azure-kms-provider-seed-active-%s", namespace)
+		_, err = kubeClient.CoreV1().Secrets(namespace).Get(apiContext, secretName, metav1.GetOptions{})
 		if err != nil {
-			return fmt.Errorf("failed to encrypt cluster seed: %w", err)
+			if errors.IsNotFound(err) {
+				// Generate a new cluster seed
+				clusterSeed, err := aes.GenerateKey(sha256.BlockSize) // larger seeds will be hashed down to this size
+				if err != nil {
+					return fmt.Errorf("failed to generate cluster seed: %w", err)
+				}
+
+				//Encrypt the cluster seed
+				encryptedClusterSeedResp, err := kvClient.Encrypt(ctx, clusterSeed, azkeys.EncryptionAlgorithmRSAOAEP256)
+				if err != nil {
+					return fmt.Errorf("failed to encrypt cluster seed: %w", err)
+				}
+
+				// Create a new secret with the encrypted cluster seed
+				secret := &corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      secretName,
+						Namespace: namespace,
+					},
+					Data: map[string][]byte{
+						"encrypted-seed": encryptedClusterSeedResp.Ciphertext,
+						"key-id":         []byte(encryptedClusterSeedResp.KeyID),
+					},
+				}
+				_, err = kubeClient.CoreV1().Secrets(namespace).Create(ctx, secret, metav1.CreateOptions{})
+				if err != nil {
+					return fmt.Errorf("failed to create secret: %w", err)
+				}
+
+				mlog.Info("Generated and stored new cluster seed", "secret", secretName, "namespace", namespace)
+				return nil
+			} else {
+				return fmt.Errorf("failed to get secret: %w", err)
+			}
 		}
 
-		// this command is for tests only so we make the assumption that the key ID does not change
-		// and that the annotations do not contain any data needed to decrypt the cluster seed
-		// we could always just store the entire response and take that as input if we wanted to
-		_ = encryptedClusterSeedResp.KeyID
-		_ = encryptedClusterSeedResp.Annotations
-
-		if err := os.WriteFile(*generateEncryptedClusterSeed, encryptedClusterSeedResp.Ciphertext, 0o600); err != nil {
-			return fmt.Errorf("failed to write cluster seed file: %w", err)
-		}
-
+		// An existing secret was found so there is no need to create a new secret
+		mlog.Info("Found existing secret, not generating a new secret")
 		return nil
 	}
 

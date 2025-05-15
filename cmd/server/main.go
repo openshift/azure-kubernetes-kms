@@ -7,7 +7,6 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
 	"flag"
 	"fmt"
 	"net"
@@ -22,20 +21,13 @@ import (
 	"github.com/Azure/kubernetes-kms/pkg/config"
 	"github.com/Azure/kubernetes-kms/pkg/metrics"
 	"github.com/Azure/kubernetes-kms/pkg/plugin"
-	"github.com/Azure/kubernetes-kms/pkg/plugin/aes"
 	"github.com/Azure/kubernetes-kms/pkg/utils"
 	"github.com/Azure/kubernetes-kms/pkg/version"
 
 	"google.golang.org/grpc"
 	"monis.app/mlog"
 
-	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
-	kmsv1 "k8s.io/kms/apis/v1beta1"
 	kmsv2 "k8s.io/kms/apis/v2"
 )
 
@@ -54,7 +46,6 @@ var (
 
 	healthzPort    = flag.Int("healthz-port", 8787, "port for health check")
 	healthzPath    = flag.String("healthz-path", "/healthz", "path for health check")
-	healthzTimeout = flag.Duration("healthz-timeout", 20*time.Second, "RPC timeout for health check")
 	metricsBackend = flag.String("metrics-backend", "prometheus", "Backend used for metrics")
 	metricsAddress = flag.String("metrics-addr", "8095", "The address the metric endpoint binds to")
 
@@ -62,9 +53,7 @@ var (
 	proxyAddress = flag.String("proxy-address", "", "proxy address")
 	proxyPort    = flag.Int("proxy-port", 7788, "port for proxy")
 
-	encryptedClusterSeedFile                = flag.String("encrypted-cluster-seed-file", "", "File with encrypted cluster seed used to generate KEKs to encrypt API server DEK seeds")
-	generateEncryptedClusterSeedInNamespace = flag.String("generate-encrypted-cluster-seed-in-namespace", "", "FLag indicating to generate a new encrypted cluster seed and store it in the given namespace. "+
-		"The value is the namespace to store the secret in. The secret name will be 'azure-kms-provider-seed-active-<namespace>'.")
+	encryptedClusterSeedFile = flag.String("encrypted-cluster-seed-file", "", "File with encrypted cluster seed used to generate KEKs to encrypt API server DEK seeds")
 )
 
 func main() {
@@ -132,69 +121,6 @@ func setupKMSPlugin() error {
 		return fmt.Errorf("failed to create key vault client: %w", err)
 	}
 
-	// Generate a new encrypted cluster seed and store it in a secret in the given namespace.
-	// If the secret already exists, do not generate a new one.
-	if generateEncryptedClusterSeedInNamespace != nil && len(*generateEncryptedClusterSeedInNamespace) != 0 {
-		namespace := *generateEncryptedClusterSeedInNamespace
-
-		// Generate a kubeconfig
-		kubeconfig, err := rest.InClusterConfig()
-		if err != nil {
-			return fmt.Errorf("failed to get kubeconfig: %w", err)
-		}
-		kubeClient, err := kubernetes.NewForConfig(kubeconfig)
-		if err != nil {
-			return fmt.Errorf("failed to make kube client: %w", err)
-		}
-		apiContext, cancel := context.WithTimeout(ctx, 10*time.Second)
-		defer cancel()
-
-		// Check if the secret already exists, if it does, do not generate a new one. If it does not, generate a new
-		// seed and store it in a secret.
-		secretName := fmt.Sprintf("azure-kms-provider-seed-active-%s", namespace)
-		_, err = kubeClient.CoreV1().Secrets(namespace).Get(apiContext, secretName, metav1.GetOptions{})
-		if err != nil {
-			if errors.IsNotFound(err) {
-				// Generate a new cluster seed
-				clusterSeed, err := aes.GenerateKey(sha256.BlockSize) // larger seeds will be hashed down to this size
-				if err != nil {
-					return fmt.Errorf("failed to generate cluster seed: %w", err)
-				}
-
-				//Encrypt the cluster seed
-				encryptedClusterSeedResp, err := kvClient.Encrypt(ctx, clusterSeed, azkeys.EncryptionAlgorithmRSAOAEP256)
-				if err != nil {
-					return fmt.Errorf("failed to encrypt cluster seed: %w", err)
-				}
-
-				// Create a new secret with the encrypted cluster seed
-				secret := &corev1.Secret{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      secretName,
-						Namespace: namespace,
-					},
-					Data: map[string][]byte{
-						"encrypted-seed": encryptedClusterSeedResp.Ciphertext,
-						"key-id":         []byte(encryptedClusterSeedResp.KeyID),
-					},
-				}
-				_, err = kubeClient.CoreV1().Secrets(namespace).Create(ctx, secret, metav1.CreateOptions{})
-				if err != nil {
-					return fmt.Errorf("failed to create secret: %w", err)
-				}
-
-				mlog.Info("Generated and stored new cluster seed", "secret", secretName, "namespace", namespace)
-				return nil
-			} else {
-				return fmt.Errorf("failed to get secret: %w", err)
-			}
-		}
-
-		// An existing secret was found so there is no need to create a new secret
-		mlog.Info("Found existing secret, not generating a new secret")
-		return nil
-	}
-
 	// Initialize and run the GRPC server
 	proto, addr, err := utils.ParseEndpoint(*listenAddr)
 	if err != nil {
@@ -215,66 +141,34 @@ func setupKMSPlugin() error {
 
 	s := grpc.NewServer(opts...)
 
-	// legacy path
-	if len(*encryptedClusterSeedFile) == 0 {
-		// register kms v1 server
-		kmsV1Server, err := plugin.NewKMSv1Server(kvClient)
-		if err != nil {
-			return fmt.Errorf("failed to create server: %w", err)
-		}
-		kmsv1.RegisterKeyManagementServiceServer(s, kmsV1Server)
-
-		// register kms v2 server
-		kmsV2Server, err := plugin.NewKMSv2Server(kvClient)
-		if err != nil {
-			return fmt.Errorf("failed to create kms V2 server: %w", err)
-		}
-		kmsv2.RegisterKeyManagementServiceServer(s, kmsV2Server)
-
-		// Health check for kms v1 and v2
-		healthz := &plugin.HealthZ{
-			KMSv1Server: kmsV1Server,
-			KMSv2Server: kmsV2Server,
-			HealthCheckURL: &url.URL{
-				Host: net.JoinHostPort("", strconv.FormatUint(uint64(*healthzPort), 10)),
-				Path: *healthzPath,
-			},
-			UnixSocketPath: listener.Addr().String(),
-			RPCTimeout:     *healthzTimeout,
-		}
-		go healthz.Serve()
-	} else {
-		// note that this really should be a different plugin altogether, but doing it here lets me re-use CI for a POC
-
-		encryptedClusterSeed, err := os.ReadFile(*encryptedClusterSeedFile)
-		if err != nil {
-			return fmt.Errorf("failed to read encrypted cluster seed file: %w", err)
-		}
-
-		ctx, cancel := context.WithTimeout(ctx, time.Minute)
-		defer cancel()
-
-		// attempt to bootstrap by decrypting the cluster seed
-		clusterSeed, err := kvClient.Decrypt(ctx, encryptedClusterSeed, azkeys.EncryptionAlgorithmRSAOAEP256, "", nil, "")
-		if err != nil {
-			return fmt.Errorf("failed to decrypt cluster seed: %w", err)
-		}
-		cancel()
-
-		kmsV2ServerWrapped, err := plugin.NewKMSv2ServerWrapped(clusterSeed)
-		if err != nil {
-			return fmt.Errorf("failed to create kms V2 server: %w", err)
-		}
-		kmsv2.RegisterKeyManagementServiceServer(s, kmsV2ServerWrapped)
-
-		healthCheckURL := &url.URL{
-			Host: net.JoinHostPort("", strconv.FormatUint(uint64(*healthzPort), 10)),
-			Path: *healthzPath,
-		}
-
-		// if we bootstrap, we are always healthy because the crypto is all local
-		go plugin.BlockingRunAlwaysHealthyServer(healthCheckURL)
+	encryptedClusterSeed, err := os.ReadFile(*encryptedClusterSeedFile)
+	if err != nil {
+		return fmt.Errorf("failed to read encrypted cluster seed file: %w", err)
 	}
+
+	ctx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+
+	// attempt to bootstrap by decrypting the cluster seed
+	clusterSeed, err := kvClient.Decrypt(ctx, encryptedClusterSeed, azkeys.EncryptionAlgorithmRSAOAEP256, "", nil, "")
+	if err != nil {
+		return fmt.Errorf("failed to decrypt cluster seed: %w", err)
+	}
+	cancel()
+
+	kmsV2ServerWrapped, err := plugin.NewKMSv2ServerWrapped(clusterSeed)
+	if err != nil {
+		return fmt.Errorf("failed to create kms V2 server: %w", err)
+	}
+	kmsv2.RegisterKeyManagementServiceServer(s, kmsV2ServerWrapped)
+
+	healthCheckURL := &url.URL{
+		Host: net.JoinHostPort("", strconv.FormatUint(uint64(*healthzPort), 10)),
+		Path: *healthzPath,
+	}
+
+	// if we bootstrap, we are always healthy because the crypto is all local
+	go plugin.BlockingRunAlwaysHealthyServer(healthCheckURL)
 
 	mlog.Always("Listening for connections", "addr", listener.Addr().String())
 	go func() {

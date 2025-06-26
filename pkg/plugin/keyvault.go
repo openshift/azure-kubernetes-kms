@@ -184,7 +184,7 @@ func (kvc *KeyVaultClient) Encrypt(
 
 	return &service.EncryptResponse{
 		Ciphertext:  result.Result,
-		KeyID:       kvc.keyIDHash,
+		KeyID:       fmt.Sprintf("%s/%s", kvc.keyName, kvc.keyVersion),
 		Annotations: annotations,
 	}, nil
 }
@@ -199,7 +199,7 @@ func (kvc *KeyVaultClient) Decrypt(
 	decryptRequestKeyID string,
 ) ([]byte, error) {
 	if apiVersion == version.KMSv2APIVersion {
-		err := kvc.validateAnnotations(annotations, decryptRequestKeyID, encryptionAlgorithm)
+		err := validateAnnotations(annotations, encryptionAlgorithm)
 		if err != nil {
 			return nil, err
 		}
@@ -211,7 +211,14 @@ func (kvc *KeyVaultClient) Decrypt(
 		Value:     []byte(value),
 	}
 
-	result, err := kvc.baseClient.Decrypt(ctx, kvc.keyName, kvc.keyVersion, params, nil)
+	parts := strings.Split(decryptRequestKeyID, "/")
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("invalid decrypt request key id %s, expected format is keyName/keyVersion", decryptRequestKeyID)
+	}
+	keyName := parts[0]
+	keyVersion := parts[1]
+
+	result, err := kvc.baseClient.Decrypt(ctx, keyName, keyVersion, params, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decrypt, error: %+v", err)
 	}
@@ -226,22 +233,12 @@ func (kvc *KeyVaultClient) Decrypt(
 // ValidateAnnotations validates following annotations before decryption:
 // - Algorithm.
 // - Version.
-// It also validates keyID that the API server checks.
-func (kvc *KeyVaultClient) validateAnnotations(
+func validateAnnotations(
 	annotations map[string][]byte,
-	keyID string,
 	encryptionAlgorithm azkeys.EncryptionAlgorithm,
 ) error {
 	if len(annotations) == 0 {
 		return fmt.Errorf("invalid annotations, annotations cannot be empty")
-	}
-
-	if keyID != kvc.keyIDHash {
-		return fmt.Errorf(
-			"key id %s does not match expected key id %s used for encryption",
-			keyID,
-			kvc.keyIDHash,
-		)
 	}
 
 	algorithm := string(annotations[algorithmAnnotationKey])

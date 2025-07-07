@@ -8,6 +8,7 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"net"
@@ -30,6 +31,7 @@ import (
 	"k8s.io/klog/v2"
 	kmsv1 "k8s.io/kms/apis/v1beta1"
 	kmsv2 "k8s.io/kms/apis/v2"
+	"k8s.io/kms/pkg/service"
 	"monis.app/mlog"
 )
 
@@ -57,7 +59,7 @@ var (
 	proxyPort    = flag.Int("proxy-port", 7788, "port for proxy")
 
 	encryptedClusterSeedFile     = flag.String("encrypted-cluster-seed-file", "", "File with encrypted cluster seed used to generate KEKs to encrypt API server DEK seeds")
-	generateEncryptedClusterSeed = flag.String("generate-encrypted-cluster-seed-file-for-tests", "", "File to write encrypted cluster seed")
+	generateEncryptedClusterSeed = flag.String("generate-encrypted-cluster-seed-file", "", "File to write encrypted cluster seed")
 )
 
 func main() {
@@ -139,13 +141,18 @@ func setupKMSPlugin() error {
 			return fmt.Errorf("failed to encrypt cluster seed: %w", err)
 		}
 
-		// this command is for tests only so we make the assumption that the key ID does not change
-		// and that the annotations do not contain any data needed to decrypt the cluster seed
-		// we could always just store the entire response and take that as input if we wanted to
-		_ = encryptedClusterSeedResp.KeyID
-		_ = encryptedClusterSeedResp.Annotations
+		encryptedClusterSeedResp.Annotations["created-at.azure.akv.io"] = []byte(time.Now().Format(time.RFC3339))
+		encryptedClusterSeedResp.Annotations["vault-name.azure.akv.io"] = []byte(*keyvaultName)
+		encryptedClusterSeedResp.Annotations["key-name.azure.akv.io"] = []byte(*keyName)
+		encryptedClusterSeedResp.Annotations["key-version.azure.akv.io"] = []byte(*keyVersion)
 
-		if err := os.WriteFile(*generateEncryptedClusterSeed, encryptedClusterSeedResp.Ciphertext, 0o600); err != nil {
+		// Store the complete response as JSON
+		jsonData, err := json.MarshalIndent(encryptedClusterSeedResp, "", "  ")
+		if err != nil {
+			return fmt.Errorf("failed to marshal encrypt response: %w", err)
+		}
+
+		if err := os.WriteFile(*generateEncryptedClusterSeed, jsonData, 0o600); err != nil {
 			return fmt.Errorf("failed to write cluster seed file: %w", err)
 		}
 
@@ -201,22 +208,49 @@ func setupKMSPlugin() error {
 		}
 		go healthz.Serve()
 	} else {
-		// note that this really should be a different plugin altogether, but doing it here lets me re-use CI for a POC
-
-		encryptedClusterSeed, err := os.ReadFile(*encryptedClusterSeedFile)
+		fileData, err := os.ReadFile(*encryptedClusterSeedFile)
 		if err != nil {
 			return fmt.Errorf("failed to read encrypted cluster seed file: %w", err)
 		}
 
-		ctx, cancel := context.WithTimeout(ctx, time.Minute)
-		defer cancel()
+		// Try to parse as JSON format (service.EncryptResponse) first
+		var encryptResp service.EncryptResponse
+		var clusterSeed []byte
 
-		// attempt to bootstrap by decrypting the cluster seed
-		clusterSeed, err := kvClient.Decrypt(ctx, encryptedClusterSeed, azkeys.EncryptionAlgorithmRSAOAEP256, "", nil, "")
-		if err != nil {
-			return fmt.Errorf("failed to decrypt cluster seed: %w", err)
+		if jsonErr := json.Unmarshal(fileData, &encryptResp); jsonErr == nil {
+			mlog.Info("Using encrypted cluster seed file")
+
+			// Extract metadata from annotations
+			storedVaultName := string(encryptResp.Annotations["vault-name.azure.akv.io"])
+			storedKeyName := string(encryptResp.Annotations["key-name.azure.akv.io"])
+			storedKeyVersion := string(encryptResp.Annotations["key-version.azure.akv.io"])
+
+			// Validation
+			if storedVaultName != *keyvaultName {
+				return fmt.Errorf("key vault name mismatch: stored=%s, current=%s", storedVaultName, *keyvaultName)
+			}
+			if storedKeyName != *keyName {
+				return fmt.Errorf("key name mismatch: stored=%s, current=%s", storedKeyName, *keyName)
+			}
+			if storedKeyVersion != *keyVersion {
+				return fmt.Errorf("key version mismatch: stored=%s, current=%s", storedKeyVersion, *keyVersion)
+			}
+
+			ctx, cancel := context.WithTimeout(ctx, time.Minute)
+			defer cancel()
+
+			// Use the stored response data for decryption
+			clusterSeed, err = kvClient.Decrypt(ctx, encryptResp.Ciphertext, azkeys.EncryptionAlgorithmRSAOAEP256, "", encryptResp.Annotations, encryptResp.KeyID)
+			if err != nil {
+				return fmt.Errorf("failed to decrypt cluster seed (production format): %w", err)
+			}
+
+			mlog.Always("Successfully decrypted cluster seed",
+				"keyVault", storedVaultName,
+				"keyName", storedKeyName,
+				"keyVersion", storedKeyVersion,
+				"keyID", encryptResp.KeyID)
 		}
-		cancel()
 
 		kmsV2ServerWrapped, err := plugin.NewKMSv2ServerWrapped(clusterSeed)
 		if err != nil {

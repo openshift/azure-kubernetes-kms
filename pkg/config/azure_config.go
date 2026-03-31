@@ -19,6 +19,13 @@ type AzureConfig struct {
 	AADClientCertPath           string `json:"aadClientCertPath" yaml:"aadClientCertPath"`
 	AADClientCertPassword       string `json:"aadClientCertPassword" yaml:"aadClientCertPassword"`
 	AADMSIDataPlaneIdentityPath string `json:"aadMSIDataPlaneIdentityPath,omitempty" yaml:"aadMSIDataPlaneIdentityPath,omitempty"`
+
+	// UseFederatedWorkloadIdentityExtension enables workload identity authentication
+	// using a federated token projected into the pod. When enabled, AADClientID and
+	// AADFederatedTokenFile must also be set.
+	UseFederatedWorkloadIdentityExtension bool   `json:"useFederatedWorkloadIdentityExtension,omitempty" yaml:"useFederatedWorkloadIdentityExtension,omitempty"`
+	AADClientID                           string `json:"aadClientID,omitempty" yaml:"aadClientID,omitempty"`
+	AADFederatedTokenFile                 string `json:"aadFederatedTokenFile,omitempty" yaml:"aadFederatedTokenFile,omitempty"`
 }
 
 // GetAzureConfig returns configs in the azure.json cloud provider file.

@@ -31,6 +31,24 @@ func GetKeyvaultToken(config *config.AzureConfig, aadEndpoint string, proxyMode 
 
 // getCredential returns a token provider for the specified resource.
 func getCredential(config *config.AzureConfig, aadEndpoint string, proxyMode bool) (azcore.TokenCredential, error) {
+	if config.UseFederatedWorkloadIdentityExtension {
+		mlog.Info("using federated workload identity to retrieve access token", "clientID", redactClientCredentials(config.AADClientID))
+		opts := &azidentity.WorkloadIdentityCredentialOptions{
+			ClientOptions: azcore.ClientOptions{
+				Cloud: cloud.Configuration{
+					ActiveDirectoryAuthorityHost: aadEndpoint,
+				},
+			},
+			ClientID:      config.AADClientID,
+			TenantID:      config.TenantID,
+			TokenFilePath: config.AADFederatedTokenFile,
+		}
+		if proxyMode {
+			opts.ClientOptions.Transport = &transporter{}
+		}
+		return azidentity.NewWorkloadIdentityCredential(opts)
+	}
+
 	if config.UseManagedIdentityExtension {
 		mlog.Info("using managed identity to retrieve access token", "clientID", redactClientCredentials(config.UserAssignedIdentityID))
 		opts := &azidentity.ManagedIdentityCredentialOptions{

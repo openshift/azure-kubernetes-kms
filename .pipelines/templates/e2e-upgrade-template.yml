@@ -16,12 +16,11 @@ jobs:
       - name: KIND_NETWORK
         value: kind
       # contains the following environment variables:
-      # - AZURE_CLIENT_ID
-      # - AZURE_CLIENT_SECRET
       # - AZURE_TENANT_ID
       # - KEYVAULT_NAME
       # - KEY_NAME
       # - KEY_VERSION
+      # - USER_ASSIGNED_IDENTITY_ID
       - group: kubernetes-kms
 
     steps:
@@ -44,7 +43,7 @@ jobs:
       
       - template: manifest-template.yml
         parameters:
-          registry: mcr.microsoft.com/oss/azure/kms
+          registry: mcr.microsoft.com/oss/v2/azure/kms
           imageName: keyvault
           imageVersion: $(LATEST_KMS_VERSION)
 

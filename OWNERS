@@ -1,19 +1,24 @@
 reviewers:
-- sjenning
-- enxebre
-- csrwng
-- muraee
 - bryan-cox
-- jparrill
+- clebs
+- csrwng
+- devguyio
 - dgrisonnet
+- enxebre
+- jparrill
+- muraee
+- Nirshal
+- sdminonne
+- sjenning
 - swghosh
 approvers:
-- sjenning
-- enxebre
-- csrwng
-- muraee
 - bryan-cox
-- jparrill
+- csrwng
+- devguyio
 - dgrisonnet
+- enxebre
+- jparrill
+- muraee
+- sjenning
 - swghosh
 component: hypershift

@@ -31,6 +31,22 @@ func GetKeyvaultToken(config *config.AzureConfig, aadEndpoint string, proxyMode 
 
 // getCredential returns a token provider for the specified resource.
 func getCredential(config *config.AzureConfig, aadEndpoint string, proxyMode bool) (azcore.TokenCredential, error) {
+	if config.UseWorkloadIdentityExtension {
+		mlog.Always("using workload identity to retrieve access token")
+		// NOTE: proxy mode is not supported for workload identity. The credential
+		// parameters (ClientID, TenantID, TokenFilePath) are read from the
+		// webhook-injected environment variables (AZURE_CLIENT_ID, AZURE_TENANT_ID,
+		// AZURE_FEDERATED_TOKEN_FILE).
+		opts := &azidentity.WorkloadIdentityCredentialOptions{
+			ClientOptions: azcore.ClientOptions{
+				Cloud: cloud.Configuration{
+					ActiveDirectoryAuthorityHost: aadEndpoint,
+				},
+			},
+		}
+		return azidentity.NewWorkloadIdentityCredential(opts)
+	}
+
 	if config.UseManagedIdentityExtension {
 		mlog.Info("using managed identity to retrieve access token", "clientID", redactClientCredentials(config.UserAssignedIdentityID))
 		opts := &azidentity.ManagedIdentityCredentialOptions{

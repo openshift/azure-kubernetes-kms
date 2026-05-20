@@ -14,8 +14,9 @@ type AzureConfig struct {
 	TenantID                    string `json:"tenantId" yaml:"tenantId"`
 	ClientID                    string `json:"aadClientId" yaml:"aadClientId"`
 	ClientSecret                string `json:"aadClientSecret" yaml:"aadClientSecret"`
-	UseManagedIdentityExtension bool   `json:"useManagedIdentityExtension,omitempty" yaml:"useManagedIdentityExtension,omitempty"`
-	UserAssignedIdentityID      string `json:"userAssignedIdentityID,omitempty" yaml:"userAssignedIdentityID,omitempty"`
+	UseWorkloadIdentityExtension bool   `json:"useWorkloadIdentityExtension,omitempty" yaml:"useWorkloadIdentityExtension,omitempty"`
+	UseManagedIdentityExtension  bool   `json:"useManagedIdentityExtension,omitempty" yaml:"useManagedIdentityExtension,omitempty"`
+	UserAssignedIdentityID       string `json:"userAssignedIdentityID,omitempty" yaml:"userAssignedIdentityID,omitempty"`
 	AADClientCertPath           string `json:"aadClientCertPath" yaml:"aadClientCertPath"`
 	AADClientCertPassword       string `json:"aadClientCertPassword" yaml:"aadClientCertPassword"`
 	AADMSIDataPlaneIdentityPath string `json:"aadMSIDataPlaneIdentityPath,omitempty" yaml:"aadMSIDataPlaneIdentityPath,omitempty"`

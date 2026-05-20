@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/Azure/azure-sdk-for-go/services/keyvault/2016-10-01/keyvault"
+	"github.com/Azure/azure-sdk-for-go/sdk/security/keyvault/azkeys"
 	"github.com/Azure/kubernetes-kms/pkg/metrics"
 	mockkeyvault "github.com/Azure/kubernetes-kms/pkg/plugin/mock_keyvault"
 
@@ -45,7 +45,7 @@ func TestV2Encrypt(t *testing.T) {
 		t.Run(test.desc, func(t *testing.T) {
 			kvClient := &mockkeyvault.KeyVaultClient{
 				KeyID:     "mock-key-id",
-				Algorithm: keyvault.RSA15,
+				Algorithm: azkeys.EncryptionAlgorithmRSA15,
 			}
 			kvClient.SetEncryptResponse(test.output, test.err)
 
@@ -98,7 +98,7 @@ func TestV2Decrypt(t *testing.T) {
 			output: []byte{},
 			err:    fmt.Errorf("key id \"invalid-key-id\" does not match expected key id \"mock-key-id\" used for encryption"),
 			annotations: map[string][]byte{
-				algorithmAnnotationKey: []byte(keyvault.RSA15),
+				algorithmAnnotationKey: []byte(azkeys.EncryptionAlgorithmRSA15),
 				versionAnnotationKey:   []byte("1"),
 			},
 		},
@@ -118,7 +118,7 @@ func TestV2Decrypt(t *testing.T) {
 			output: []byte{},
 			err:    fmt.Errorf("version \"10\" does not match expected version \"1\" used for encryption"),
 			annotations: map[string][]byte{
-				algorithmAnnotationKey: []byte(keyvault.RSA15),
+				algorithmAnnotationKey: []byte(azkeys.EncryptionAlgorithmRSA15),
 				versionAnnotationKey:   []byte("10"),
 			},
 		},
@@ -128,7 +128,7 @@ func TestV2Decrypt(t *testing.T) {
 			output: []byte{},
 			err:    fmt.Errorf("failed to decrypt"),
 			annotations: map[string][]byte{
-				algorithmAnnotationKey: []byte(keyvault.RSA15),
+				algorithmAnnotationKey: []byte(azkeys.EncryptionAlgorithmRSA15),
 				versionAnnotationKey:   []byte("1"),
 			},
 		},
@@ -138,7 +138,7 @@ func TestV2Decrypt(t *testing.T) {
 			output: []byte("foo"),
 			err:    nil,
 			annotations: map[string][]byte{
-				algorithmAnnotationKey: []byte(keyvault.RSA15),
+				algorithmAnnotationKey: []byte(azkeys.EncryptionAlgorithmRSA15),
 				versionAnnotationKey:   []byte("1"),
 			},
 		},
@@ -148,7 +148,7 @@ func TestV2Decrypt(t *testing.T) {
 		t.Run(test.desc, func(t *testing.T) {
 			kvClient := &mockkeyvault.KeyVaultClient{
 				KeyID:     "mock-key-id",
-				Algorithm: keyvault.RSAOAEP256,
+				Algorithm: azkeys.EncryptionAlgorithmRSAOAEP256,
 			}
 			kvClient.SetDecryptResponse(test.output, test.err)
 

@@ -10,19 +10,20 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Azure/azure-sdk-for-go/sdk/security/keyvault/azkeys"
 	"github.com/Azure/kubernetes-kms/pkg/metrics"
 	"github.com/Azure/kubernetes-kms/pkg/version"
 
+	"github.com/Azure/azure-sdk-for-go/services/keyvault/2016-10-01/keyvault"
 	kmsv1 "k8s.io/kms/apis/v1beta1"
 	"monis.app/mlog"
 )
 
 // KeyManagementServiceServer is a gRPC server.
 type KeyManagementServiceServer struct {
+	kmsv1.UnimplementedKeyManagementServiceServer
 	kvClient            Client
 	reporter            metrics.StatsReporter
-	encryptionAlgorithm azkeys.EncryptionAlgorithm
+	encryptionAlgorithm keyvault.JSONWebKeyEncryptionAlgorithm
 }
 
 // Config is the configuration for the KMS plugin.
@@ -47,7 +48,7 @@ func NewKMSv1Server(kvClient Client) (*KeyManagementServiceServer, error) {
 	return &KeyManagementServiceServer{
 		kvClient:            kvClient,
 		reporter:            statsReporter,
-		encryptionAlgorithm: azkeys.EncryptionAlgorithmRSA15,
+		encryptionAlgorithm: keyvault.RSA15,
 	}, nil
 }
 

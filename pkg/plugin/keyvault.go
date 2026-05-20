@@ -10,22 +10,20 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
-	"net/http"
 	"net/url"
 	"path"
 	"regexp"
 	"strings"
 
-	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
-	"github.com/Azure/azure-sdk-for-go/sdk/azcore/cloud"
-	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
 	"github.com/Azure/kubernetes-kms/pkg/auth"
 	"github.com/Azure/kubernetes-kms/pkg/config"
 	"github.com/Azure/kubernetes-kms/pkg/consts"
 	"github.com/Azure/kubernetes-kms/pkg/utils"
 	"github.com/Azure/kubernetes-kms/pkg/version"
 
-	"github.com/Azure/azure-sdk-for-go/sdk/security/keyvault/azkeys"
+	kv "github.com/Azure/azure-sdk-for-go/services/keyvault/2016-10-01/keyvault"
+	"github.com/Azure/go-autorest/autorest"
+	"github.com/Azure/go-autorest/autorest/azure"
 	"k8s.io/kms/pkg/service"
 	"monis.app/mlog"
 )
@@ -50,26 +48,30 @@ type Client interface {
 	Encrypt(
 		ctx context.Context,
 		plain []byte,
-		encryptionAlgorithm azkeys.EncryptionAlgorithm,
+		encryptionAlgorithm kv.JSONWebKeyEncryptionAlgorithm,
 	) (*service.EncryptResponse, error)
 	Decrypt(
 		ctx context.Context,
 		cipher []byte,
-		encryptionAlgorithm azkeys.EncryptionAlgorithm,
+		encryptionAlgorithm kv.JSONWebKeyEncryptionAlgorithm,
 		apiVersion string,
 		annotations map[string][]byte,
 		decryptRequestKeyID string,
 	) ([]byte, error)
+	GetUserAgent() string
+	GetVaultURL() string
 }
 
 // KeyVaultClient is a client for interacting with Keyvault.
 type KeyVaultClient struct {
-	baseClient *azkeys.Client
-	config     *config.AzureConfig
-	vaultName  string
-	keyName    string
-	keyVersion string
-	keyIDHash  string
+	baseClient       kv.BaseClient
+	config           *config.AzureConfig
+	vaultName        string
+	keyName          string
+	keyVersion       string
+	vaultURL         string
+	keyIDHash        string
+	azureEnvironment *azure.Environment
 }
 
 // NewKeyVaultClient returns a new key vault client to use for kms operations.
@@ -91,99 +93,94 @@ func NewKeyVaultClient(
 	if len(vaultName) == 0 || len(keyName) == 0 || len(keyVersion) == 0 {
 		return nil, fmt.Errorf("key vault name, key name and key version are required")
 	}
-
-	vaultURL, err := getVaultURL(vaultName, managedHSM, config.Cloud)
+	kvClient := kv.New()
+	err := kvClient.AddToUserAgent(version.GetUserAgent())
 	if err != nil {
-		return nil, fmt.Errorf("failed to get vault url, error: %+v", err)
+		return nil, fmt.Errorf("failed to add user agent to keyvault client, error: %w", err)
+	}
+	env, err := auth.ParseAzureEnvironment(config.Cloud)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse cloud environment: %s, error: %w", config.Cloud, err)
 	}
 	if proxyMode {
-		vaultURL = getProxiedVaultURL(vaultURL, proxyAddress, proxyPort)
+		env.ActiveDirectoryEndpoint = fmt.Sprintf("http://%s:%d/", proxyAddress, proxyPort)
 	}
 
-	aadEndpoint, err := getAadEndpoint(config, proxyMode, proxyAddress, proxyPort)
+	vaultResourceURL := getVaultResourceIdentifier(managedHSM, env)
+	if vaultResourceURL == azure.NotAvailable {
+		return nil, fmt.Errorf("keyvault resource identifier not available for cloud: %s", env.Name)
+	}
+	token, err := auth.GetKeyvaultToken(config, env, vaultResourceURL, proxyMode)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get aad endpoint: %v", err)
+		return nil, fmt.Errorf("failed to get key vault token, error: %w", err)
 	}
+	kvClient.Authorizer = token
 
-	token, err := auth.GetKeyvaultToken(config, aadEndpoint, proxyMode)
+	vaultURL, err := getVaultURL(vaultName, managedHSM, env)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get keyvault token: %v", err)
+		return nil, fmt.Errorf("failed to get vault url, error: %w", err)
 	}
 
-	kvClient, err := azkeys.NewClient(vaultURL, token, &azkeys.ClientOptions{
-		ClientOptions: azcore.ClientOptions{
-			PerCallPolicies: []policy.Policy{policyFunc(func(req *policy.Request) (*http.Response, error) {
-				req.Raw().Header.Set("User-Agent", version.GetUserAgent())
-				req.Raw().Header.Set(consts.RequestHeaderTargetType, consts.TargetTypeKeyVault)
-				return req.Next()
-			})},
-		},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to create keyvault client: %v", err)
-	}
-
-	keyIDHash, err := getKeyIDHash(vaultURL, keyName, keyVersion)
+	keyIDHash, err := getKeyIDHash(*vaultURL, keyName, keyVersion)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get key id hash, error: %w", err)
 	}
 
-	mlog.Always("using kms key for encrypt/decrypt", "vaultURL", vaultURL, "keyName", keyName, "keyVersion", keyVersion)
+	if proxyMode {
+		kvClient.RequestInspector = autorest.WithHeader(consts.RequestHeaderTargetType, consts.TargetTypeKeyVault)
+		vaultURL = getProxiedVaultURL(vaultURL, proxyAddress, proxyPort)
+	}
+
+	mlog.Always("using kms key for encrypt/decrypt", "vaultURL", *vaultURL, "keyName", keyName, "keyVersion", keyVersion)
 
 	client := &KeyVaultClient{
-		baseClient: kvClient,
-		config:     config,
-		vaultName:  vaultName,
-		keyName:    keyName,
-		keyVersion: keyVersion,
-		keyIDHash:  keyIDHash,
+		baseClient:       kvClient,
+		config:           config,
+		vaultName:        vaultName,
+		keyName:          keyName,
+		keyVersion:       keyVersion,
+		vaultURL:         *vaultURL,
+		azureEnvironment: env,
+		keyIDHash:        keyIDHash,
 	}
 	return client, nil
 }
-
-type policyFunc func(req *policy.Request) (*http.Response, error)
-
-func (p policyFunc) Do(req *policy.Request) (*http.Response, error) {
-	return p(req)
-}
-
-var _ policy.Policy = (*policyFunc)(nil)
 
 // Encrypt encrypts the given plain text using the keyvault key.
 func (kvc *KeyVaultClient) Encrypt(
 	ctx context.Context,
 	plain []byte,
-	encryptionAlgorithm azkeys.EncryptionAlgorithm,
+	encryptionAlgorithm kv.JSONWebKeyEncryptionAlgorithm,
 ) (*service.EncryptResponse, error) {
 	value := base64.RawURLEncoding.EncodeToString(plain)
 
-	params := azkeys.KeyOperationParameters{
-		Algorithm: &encryptionAlgorithm,
-		Value:     []byte(value),
+	params := kv.KeyOperationsParameters{
+		Algorithm: encryptionAlgorithm,
+		Value:     &value,
 	}
-	result, err := kvc.baseClient.Encrypt(ctx, kvc.keyName, kvc.keyVersion, params, nil)
+	result, err := kvc.baseClient.Encrypt(ctx, kvc.vaultURL, kvc.keyName, kvc.keyVersion, params)
 	if err != nil {
-		return nil, fmt.Errorf("failed to encrypt, error: %+v", err)
+		return nil, fmt.Errorf("failed to encrypt, error: %w", err)
 	}
 
-	if kvc.keyIDHash != fmt.Sprintf("%x", sha256.Sum256([]byte(*result.KID))) {
+	if kvc.keyIDHash != fmt.Sprintf("%x", sha256.Sum256([]byte(*result.Kid))) {
 		return nil, fmt.Errorf(
 			"key id initialized does not match with the key id from encryption result, expected: %s, got: %s",
 			kvc.keyIDHash,
-			*result.KID,
+			*result.Kid,
 		)
 	}
 
 	annotations := map[string][]byte{
-		// dateAnnotationKey:           []byte(result.Header.Get(dateAnnotationValue)),
-		// requestIDAnnotationKey:      []byte(result.Header.Get(requestIDAnnotationValue)),
-		// keyvaultRegionAnnotationKey: []byte(result.Header.Get(keyvaultRegionAnnotationValue)),
-		versionAnnotationKey:   []byte(encryptionResponseVersion),
-		algorithmAnnotationKey: []byte(encryptionAlgorithm),
+		dateAnnotationKey:           []byte(result.Header.Get(dateAnnotationValue)),
+		requestIDAnnotationKey:      []byte(result.Header.Get(requestIDAnnotationValue)),
+		keyvaultRegionAnnotationKey: []byte(result.Header.Get(keyvaultRegionAnnotationValue)),
+		versionAnnotationKey:        []byte(encryptionResponseVersion),
+		algorithmAnnotationKey:      []byte(encryptionAlgorithm),
 	}
 
 	return &service.EncryptResponse{
-		Ciphertext:  result.Result,
+		Ciphertext:  []byte(*result.Result),
 		KeyID:       kvc.keyIDHash,
 		Annotations: annotations,
 	}, nil
@@ -193,7 +190,7 @@ func (kvc *KeyVaultClient) Encrypt(
 func (kvc *KeyVaultClient) Decrypt(
 	ctx context.Context,
 	cipher []byte,
-	encryptionAlgorithm azkeys.EncryptionAlgorithm,
+	encryptionAlgorithm kv.JSONWebKeyEncryptionAlgorithm,
 	apiVersion string,
 	annotations map[string][]byte,
 	decryptRequestKeyID string,
@@ -206,21 +203,29 @@ func (kvc *KeyVaultClient) Decrypt(
 	}
 
 	value := string(cipher)
-	params := azkeys.KeyOperationParameters{
-		Algorithm: &encryptionAlgorithm,
-		Value:     []byte(value),
+	params := kv.KeyOperationsParameters{
+		Algorithm: encryptionAlgorithm,
+		Value:     &value,
 	}
 
-	result, err := kvc.baseClient.Decrypt(ctx, kvc.keyName, kvc.keyVersion, params, nil)
+	result, err := kvc.baseClient.Decrypt(ctx, kvc.vaultURL, kvc.keyName, kvc.keyVersion, params)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decrypt, error: %+v", err)
+		return nil, fmt.Errorf("failed to decrypt, error: %w", err)
 	}
-	bytes, err := base64.RawURLEncoding.DecodeString(string(result.Result))
+	bytes, err := base64.RawURLEncoding.DecodeString(*result.Result)
 	if err != nil {
-		return nil, fmt.Errorf("failed to base64 decode result, error: %+v", err)
+		return nil, fmt.Errorf("failed to base64 decode result, error: %w", err)
 	}
 
 	return bytes, nil
+}
+
+func (kvc *KeyVaultClient) GetUserAgent() string {
+	return kvc.baseClient.UserAgent
+}
+
+func (kvc *KeyVaultClient) GetVaultURL() string {
+	return kvc.vaultURL
 }
 
 // ValidateAnnotations validates following annotations before decryption:
@@ -230,7 +235,7 @@ func (kvc *KeyVaultClient) Decrypt(
 func (kvc *KeyVaultClient) validateAnnotations(
 	annotations map[string][]byte,
 	keyID string,
-	encryptionAlgorithm azkeys.EncryptionAlgorithm,
+	encryptionAlgorithm kv.JSONWebKeyEncryptionAlgorithm,
 ) error {
 	if len(annotations) == 0 {
 		return fmt.Errorf("invalid annotations, annotations cannot be empty")
@@ -265,53 +270,44 @@ func (kvc *KeyVaultClient) validateAnnotations(
 	return nil
 }
 
-func getVaultURL(vaultName string, managedHSM bool, cloud string) (vaultURL string, err error) {
+func getVaultURL(vaultName string, managedHSM bool, env *azure.Environment) (vaultURL *string, err error) {
 	// Key Vault name must be a 3-24 character string
 	if len(vaultName) < 3 || len(vaultName) > 24 {
-		return "", fmt.Errorf("invalid vault name: %q, must be between 3 and 24 chars", vaultName)
+		return nil, fmt.Errorf("invalid vault name: %q, must be between 3 and 24 chars", vaultName)
 	}
 
 	// See docs for validation spec: https://docs.microsoft.com/en-us/azure/key-vault/about-keys-secrets-and-certificates#objects-identifiers-and-versioning
 	isValid := regexp.MustCompile(`^[-A-Za-z0-9]+$`).MatchString
 	if !isValid(vaultName) {
-		return "", fmt.Errorf("invalid vault name: %q, must match [-a-zA-Z0-9]{3,24}", vaultName)
+		return nil, fmt.Errorf("invalid vault name: %q, must match [-a-zA-Z0-9]{3,24}", vaultName)
 	}
 
-	vaultDNSSuffixValue, err := getVaultDNSSuffix(managedHSM, cloud)
-	if err != nil {
-		return "", err
+	vaultDNSSuffixValue := getVaultDNSSuffix(managedHSM, env)
+	if vaultDNSSuffixValue == azure.NotAvailable {
+		return nil, fmt.Errorf("vault dns suffix not available for cloud: %s", env.Name)
 	}
 
-	return fmt.Sprintf("https://%s.%s/", vaultName, vaultDNSSuffixValue), nil
+	vaultURI := fmt.Sprintf("https://%s.%s/", vaultName, vaultDNSSuffixValue)
+	return &vaultURI, nil
 }
 
-func getProxiedVaultURL(vaultURL string, proxyAddress string, proxyPort int) string {
-	return fmt.Sprintf("http://%s:%d/%s", proxyAddress, proxyPort, strings.TrimPrefix(vaultURL, "https://"))
+func getProxiedVaultURL(vaultURL *string, proxyAddress string, proxyPort int) *string {
+	proxiedVaultURL := fmt.Sprintf("http://%s:%d/%s", proxyAddress, proxyPort, strings.TrimPrefix(*vaultURL, "https://"))
+	return &proxiedVaultURL
 }
 
-func getVaultDNSSuffix(managedHSM bool, cloud string) (string, error) {
+func getVaultDNSSuffix(managedHSM bool, env *azure.Environment) string {
 	if managedHSM {
-		switch {
-		case strings.EqualFold(cloud, "AzurePublicCloud"), strings.EqualFold(cloud, "AzureCloud"), cloud == "":
-			return "https://managedhsm.azure.net/", nil
-		case strings.EqualFold(cloud, "AzureChinaCloud"):
-			return "", fmt.Errorf("no HSM endpoint in cloud %s", cloud)
-		case strings.EqualFold(cloud, "AzureGovernmentCloud"):
-			return "", fmt.Errorf("no HSM endpoint in cloud %s", cloud)
-		default:
-			return "", fmt.Errorf("unknown cloud %s", cloud)
-		}
+		return env.ManagedHSMDNSSuffix
 	}
-	switch {
-	case strings.EqualFold(cloud, "AzurePublicCloud"), strings.EqualFold(cloud, "AzureCloud"), cloud == "":
-		return "vault.azure.net", nil
-	case strings.EqualFold(cloud, "AzureChinaCloud"):
-		return "vault.azure.cn", nil
-	case strings.EqualFold(cloud, "AzureGovernmentCloud"), strings.EqualFold(cloud, "AzureUSGovernmentCloud"):
-		return "vault.usgovcloudapi.net", nil
-	default:
-		return "", fmt.Errorf("unknown cloud %s", cloud)
+	return env.KeyVaultDNSSuffix
+}
+
+func getVaultResourceIdentifier(managedHSM bool, env *azure.Environment) string {
+	if managedHSM {
+		return env.ResourceIdentifiers.ManagedHSM
 	}
+	return env.ResourceIdentifiers.KeyVault
 }
 
 func getKeyIDHash(vaultURL, keyName, keyVersion string) (string, error) {
@@ -332,19 +328,4 @@ func getKeyIDHash(vaultURL, keyName, keyVersion string) (string, error) {
 	).String()
 
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(keyID))), nil
-}
-
-func getAadEndpoint(azureConfig *config.AzureConfig, proxyMode bool, proxyAddress string, proxyPort int) (string, error) {
-	if proxyMode {
-		return fmt.Sprintf("http://%s:%d/", proxyAddress, proxyPort), nil
-	}
-	switch {
-	case strings.EqualFold(azureConfig.Cloud, "AzurePublicCloud"), strings.EqualFold(azureConfig.Cloud, "AzureCloud"), azureConfig.Cloud == "":
-		return cloud.AzurePublic.ActiveDirectoryAuthorityHost, nil
-	case strings.EqualFold(azureConfig.Cloud, "AzureChinaCloud"):
-		return cloud.AzureChina.ActiveDirectoryAuthorityHost, nil
-	case strings.EqualFold(azureConfig.Cloud, "AzureGovernmentCloud"):
-		return cloud.AzureGovernment.ActiveDirectoryAuthorityHost, nil
-	}
-	return "", fmt.Errorf("invalid cloud type %s", azureConfig.Cloud)
 }

@@ -10,8 +10,16 @@ if [ "${running}" != 'true' ]; then
   echo "Creating local registry"
   docker run \
     -d --restart=always -p "${REGISTRY_PORT}:5000" --name "${REGISTRY_NAME}" \
-    registry:2
+    mirror.gcr.io/registry:2
 fi
+
+# create hosts.toml for the local registry containerd config
+# the certs.d directory is mounted into the kind node at /etc/containerd/certs.d
+rm -rf tests/e2e/generated_manifests/certs.d
+mkdir -p "tests/e2e/generated_manifests/certs.d/localhost:${REGISTRY_PORT}"
+cat <<EOF > "tests/e2e/generated_manifests/certs.d/localhost:${REGISTRY_PORT}/hosts.toml"
+[host."http://${REGISTRY_NAME}:5000"]
+EOF
 
 # Build and push kms image
 export REGISTRY=localhost:${REGISTRY_PORT}

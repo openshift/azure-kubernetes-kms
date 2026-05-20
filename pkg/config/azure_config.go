@@ -14,12 +14,10 @@ type AzureConfig struct {
 	TenantID                    string `json:"tenantId" yaml:"tenantId"`
 	ClientID                    string `json:"aadClientId" yaml:"aadClientId"`
 	ClientSecret                string `json:"aadClientSecret" yaml:"aadClientSecret"`
-	UseWorkloadIdentityExtension bool   `json:"useWorkloadIdentityExtension,omitempty" yaml:"useWorkloadIdentityExtension,omitempty"`
-	UseManagedIdentityExtension  bool   `json:"useManagedIdentityExtension,omitempty" yaml:"useManagedIdentityExtension,omitempty"`
-	UserAssignedIdentityID       string `json:"userAssignedIdentityID,omitempty" yaml:"userAssignedIdentityID,omitempty"`
+	UseManagedIdentityExtension bool   `json:"useManagedIdentityExtension,omitempty" yaml:"useManagedIdentityExtension,omitempty"`
+	UserAssignedIdentityID      string `json:"userAssignedIdentityID,omitempty" yaml:"userAssignedIdentityID,omitempty"`
 	AADClientCertPath           string `json:"aadClientCertPath" yaml:"aadClientCertPath"`
 	AADClientCertPassword       string `json:"aadClientCertPassword" yaml:"aadClientCertPassword"`
-	AADMSIDataPlaneIdentityPath string `json:"aadMSIDataPlaneIdentityPath,omitempty" yaml:"aadMSIDataPlaneIdentityPath,omitempty"`
 }
 
 // GetAzureConfig returns configs in the azure.json cloud provider file.
@@ -29,10 +27,10 @@ func GetAzureConfig(configFile string) (config *AzureConfig, err error) {
 	mlog.Trace("populating AzureConfig from config file", "configFile", configFile)
 	bytes, err := os.ReadFile(configFile)
 	if err != nil {
-		return nil, fmt.Errorf("failed to load config file %s, error: %+v", configFile, err)
+		return nil, fmt.Errorf("failed to load config file %s, error: %w", configFile, err)
 	}
 	if err = yaml.Unmarshal(bytes, &cfg); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal azure.json, error: %+v", err)
+		return nil, fmt.Errorf("failed to unmarshal azure.json, error: %w", err)
 	}
 	return &cfg, nil
 }

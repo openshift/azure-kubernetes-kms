@@ -81,7 +81,7 @@ func getCredential(config *config.AzureConfig, aadEndpoint string, proxyMode boo
 		}
 		certificate, privateKey, err := decodePkcs12(certData, config.AADClientCertPassword)
 		if err != nil {
-			return nil, fmt.Errorf("failed to decode the client certificate, error: %v", err)
+			return nil, fmt.Errorf("failed to decode the client certificate, error: %w", err)
 		}
 
 		opts := &azidentity.ClientCertificateCredentialOptions{
@@ -123,7 +123,7 @@ func getCredential(config *config.AzureConfig, aadEndpoint string, proxyMode boo
 func decodePkcs12(pkcs []byte, password string) (*x509.Certificate, *rsa.PrivateKey, error) {
 	privateKey, certificate, err := pkcs12.Decode(pkcs, password)
 	if err != nil {
-		return nil, nil, fmt.Errorf("decoding the PKCS#12 client certificate: %v", err)
+		return nil, nil, fmt.Errorf("decoding the PKCS#12 client certificate: %w", err)
 	}
 	rsaPrivateKey, isRsaKey := privateKey.(*rsa.PrivateKey)
 	if !isRsaKey {

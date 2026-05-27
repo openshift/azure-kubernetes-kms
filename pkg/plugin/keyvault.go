@@ -94,7 +94,7 @@ func NewKeyVaultClient(
 
 	vaultURL, err := getVaultURL(vaultName, managedHSM, config.Cloud)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get vault url, error: %+v", err)
+		return nil, fmt.Errorf("failed to get vault url, error: %w", err)
 	}
 	if proxyMode {
 		vaultURL = getProxiedVaultURL(vaultURL, proxyAddress, proxyPort)
@@ -163,7 +163,7 @@ func (kvc *KeyVaultClient) Encrypt(
 	}
 	result, err := kvc.baseClient.Encrypt(ctx, kvc.keyName, kvc.keyVersion, params, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to encrypt, error: %+v", err)
+		return nil, fmt.Errorf("failed to encrypt, error: %w", err)
 	}
 
 	if kvc.keyIDHash != fmt.Sprintf("%x", sha256.Sum256([]byte(*result.KID))) {
@@ -213,11 +213,11 @@ func (kvc *KeyVaultClient) Decrypt(
 
 	result, err := kvc.baseClient.Decrypt(ctx, kvc.keyName, kvc.keyVersion, params, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decrypt, error: %+v", err)
+		return nil, fmt.Errorf("failed to decrypt, error: %w", err)
 	}
 	bytes, err := base64.RawURLEncoding.DecodeString(string(result.Result))
 	if err != nil {
-		return nil, fmt.Errorf("failed to base64 decode result, error: %+v", err)
+		return nil, fmt.Errorf("failed to base64 decode result, error: %w", err)
 	}
 
 	return bytes, nil

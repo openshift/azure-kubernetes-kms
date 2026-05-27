@@ -10,19 +10,20 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Azure/azure-sdk-for-go/sdk/security/keyvault/azkeys"
 	"github.com/Azure/kubernetes-kms/pkg/metrics"
 	"github.com/Azure/kubernetes-kms/pkg/version"
 
+	"github.com/Azure/azure-sdk-for-go/services/keyvault/2016-10-01/keyvault"
 	kmsv2 "k8s.io/kms/apis/v2"
 	"monis.app/mlog"
 )
 
 // KeyManagementServiceV2Server is a gRPC server.
 type KeyManagementServiceV2Server struct {
+	kmsv2.UnimplementedKeyManagementServiceServer
 	kvClient            Client
 	reporter            metrics.StatsReporter
-	encryptionAlgorithm azkeys.EncryptionAlgorithm
+	encryptionAlgorithm keyvault.JSONWebKeyEncryptionAlgorithm
 }
 
 // NewKMSv2Server creates an instance of the KMS Service Server with v2 apis.
@@ -35,7 +36,7 @@ func NewKMSv2Server(kvClient Client) (*KeyManagementServiceV2Server, error) {
 	return &KeyManagementServiceV2Server{
 		kvClient:            kvClient,
 		reporter:            statsReporter,
-		encryptionAlgorithm: azkeys.EncryptionAlgorithmRSAOAEP256,
+		encryptionAlgorithm: keyvault.RSAOAEP256,
 	}, nil
 }
 

@@ -6,7 +6,6 @@
 package auth
 
 import (
-	"context"
 	"crypto/rsa"
 	"crypto/x509"
 	"fmt"
@@ -14,63 +13,69 @@ import (
 	"os"
 	"regexp"
 
-	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
-	"github.com/Azure/azure-sdk-for-go/sdk/azcore/cloud"
-	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/Azure/kubernetes-kms/pkg/config"
 	"github.com/Azure/kubernetes-kms/pkg/consts"
-	"github.com/Azure/msi-dataplane/pkg/dataplane"
+
+	"github.com/Azure/go-autorest/autorest"
+	"github.com/Azure/go-autorest/autorest/adal"
+	"github.com/Azure/go-autorest/autorest/azure"
 	"golang.org/x/crypto/pkcs12"
 	"monis.app/mlog"
 )
 
-// GetKeyvaultToken returns a token for the Keyvault endpoint.
-func GetKeyvaultToken(config *config.AzureConfig, aadEndpoint string, proxyMode bool) (cred azcore.TokenCredential, err error) {
-	return getCredential(config, aadEndpoint, proxyMode)
+// GetKeyvaultToken() returns token for Keyvault endpoint.
+func GetKeyvaultToken(config *config.AzureConfig, env *azure.Environment, resource string, proxyMode bool) (authorizer autorest.Authorizer, err error) {
+	servicePrincipalToken, err := GetServicePrincipalToken(config, env.ActiveDirectoryEndpoint, resource, proxyMode)
+	if err != nil {
+		return nil, err
+	}
+	authorizer = autorest.NewBearerAuthorizer(servicePrincipalToken)
+	return authorizer, nil
 }
 
-// getCredential returns a token provider for the specified resource.
-func getCredential(config *config.AzureConfig, aadEndpoint string, proxyMode bool) (azcore.TokenCredential, error) {
-	if config.UseWorkloadIdentityExtension {
-		mlog.Always("using workload identity to retrieve access token")
-		// NOTE: proxy mode is not supported for workload identity. The credential
-		// parameters (ClientID, TenantID, TokenFilePath) are read from the
-		// webhook-injected environment variables (AZURE_CLIENT_ID, AZURE_TENANT_ID,
-		// AZURE_FEDERATED_TOKEN_FILE).
-		opts := &azidentity.WorkloadIdentityCredentialOptions{
-			ClientOptions: azcore.ClientOptions{
-				Cloud: cloud.Configuration{
-					ActiveDirectoryAuthorityHost: aadEndpoint,
-				},
-			},
-		}
-		return azidentity.NewWorkloadIdentityCredential(opts)
+// GetServicePrincipalToken creates a new service principal token based on the configuration.
+func GetServicePrincipalToken(config *config.AzureConfig, aadEndpoint, resource string, proxyMode bool) (adal.OAuthTokenProvider, error) {
+	oauthConfig, err := adal.NewOAuthConfig(aadEndpoint, config.TenantID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create OAuth config, error: %w", err)
 	}
 
 	if config.UseManagedIdentityExtension {
-		mlog.Info("using managed identity to retrieve access token", "clientID", redactClientCredentials(config.UserAssignedIdentityID))
-		opts := &azidentity.ManagedIdentityCredentialOptions{
-			ID: azidentity.ClientID(config.UserAssignedIdentityID),
+		mlog.Info("using managed identity extension to retrieve access token")
+		msiEndpoint, err := adal.GetMSIVMEndpoint()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get managed service identity endpoint, error: %w", err)
 		}
-		return azidentity.NewManagedIdentityCredential(opts)
+		// using user-assigned managed identity to access keyvault
+		if len(config.UserAssignedIdentityID) > 0 {
+			mlog.Info("using User-assigned managed identity to retrieve access token", "clientID", redactClientCredentials(config.UserAssignedIdentityID))
+			return adal.NewServicePrincipalTokenFromMSIWithUserAssignedID(msiEndpoint,
+				resource,
+				config.UserAssignedIdentityID)
+		}
+		mlog.Info("using system-assigned managed identity to retrieve access token")
+		// using system-assigned managed identity to access keyvault
+		return adal.NewServicePrincipalTokenFromMSI(
+			msiEndpoint,
+			resource)
 	}
 
 	if len(config.ClientSecret) > 0 && len(config.ClientID) > 0 {
-		mlog.Info("using client_id+client_secret to retrieve access token",
+		mlog.Info("azure: using client_id+client_secret to retrieve access token",
 			"clientID", redactClientCredentials(config.ClientID), "clientSecret", redactClientCredentials(config.ClientSecret))
 
-		opts := &azidentity.ClientSecretCredentialOptions{
-			ClientOptions: azcore.ClientOptions{
-				Cloud: cloud.Configuration{
-					ActiveDirectoryAuthorityHost: aadEndpoint,
-				},
-			},
+		spt, err := adal.NewServicePrincipalToken(
+			*oauthConfig,
+			config.ClientID,
+			config.ClientSecret,
+			resource)
+		if err != nil {
+			return nil, err
 		}
-
 		if proxyMode {
-			opts.ClientOptions.Transport = &transporter{}
+			return addTargetTypeHeader(spt), nil
 		}
-		return azidentity.NewClientSecretCredential(config.TenantID, config.ClientID, config.ClientSecret, opts)
+		return spt, nil
 	}
 
 	if len(config.AADClientCertPath) > 0 && len(config.AADClientCertPassword) > 0 {
@@ -83,39 +88,34 @@ func getCredential(config *config.AzureConfig, aadEndpoint string, proxyMode boo
 		if err != nil {
 			return nil, fmt.Errorf("failed to decode the client certificate, error: %w", err)
 		}
-
-		opts := &azidentity.ClientCertificateCredentialOptions{
-			ClientOptions: azcore.ClientOptions{
-				Cloud: cloud.Configuration{
-					ActiveDirectoryAuthorityHost: aadEndpoint,
-				},
-			},
-		}
-
-		if proxyMode {
-			opts.ClientOptions.Transport = &transporter{}
-		}
-
-		return azidentity.NewClientCertificateCredential(config.TenantID, config.ClientID, []*x509.Certificate{certificate}, privateKey, opts)
-	}
-
-	if len(config.AADMSIDataPlaneIdentityPath) > 0 {
-		mlog.Info("using MSI Data Plane Identity to retrieve access token")
-
-		opts := azcore.ClientOptions{
-			Cloud: cloud.Configuration{
-				ActiveDirectoryAuthorityHost: aadEndpoint,
-			},
-		}
-		cred, err := dataplane.NewUserAssignedIdentityCredential(context.Background(), config.AADMSIDataPlaneIdentityPath, dataplane.WithClientOpts(opts))
+		spt, err := adal.NewServicePrincipalTokenFromCertificate(
+			*oauthConfig,
+			config.ClientID,
+			certificate,
+			privateKey,
+			resource)
 		if err != nil {
 			return nil, err
 		}
-
-		return cred, nil
+		if proxyMode {
+			return addTargetTypeHeader(spt), nil
+		}
+		return spt, nil
 	}
 
 	return nil, fmt.Errorf("no credentials provided for accessing keyvault")
+}
+
+// ParseAzureEnvironment returns azure environment by name.
+func ParseAzureEnvironment(cloudName string) (*azure.Environment, error) {
+	var env azure.Environment
+	var err error
+	if cloudName == "" {
+		env = azure.PublicCloud
+	} else {
+		env, err = azure.EnvironmentFromName(cloudName)
+	}
+	return &env, err
 }
 
 // decodePkcs12 decodes a PKCS#12 client certificate by extracting the public certificate and
@@ -139,10 +139,16 @@ func redactClientCredentials(sensitiveString string) string {
 	return r.ReplaceAllString(sensitiveString, "$1##### REDACTED #####$3")
 }
 
-type transporter struct{}
-
-func (t *transporter) Do(req *http.Request) (*http.Response, error) {
-	// adds the target header if proxy mode is enabled
-	req.Header.Set(consts.RequestHeaderTargetType, consts.TargetTypeAzureActiveDirectory)
-	return http.DefaultClient.Do(req)
+// addTargetTypeHeader adds the target header if proxy mode is enabled.
+func addTargetTypeHeader(spt *adal.ServicePrincipalToken) *adal.ServicePrincipalToken {
+	spt.SetSender(autorest.CreateSender(
+		(func() autorest.SendDecorator {
+			return func(s autorest.Sender) autorest.Sender {
+				return autorest.SenderFunc(func(r *http.Request) (*http.Response, error) {
+					r.Header.Set(consts.RequestHeaderTargetType, consts.TargetTypeAzureActiveDirectory)
+					return s.Do(r)
+				})
+			}
+		})()))
+	return spt
 }

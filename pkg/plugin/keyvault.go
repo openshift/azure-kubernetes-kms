@@ -293,11 +293,11 @@ func getVaultDNSSuffix(managedHSM bool, cloud string) (string, error) {
 	if managedHSM {
 		switch {
 		case strings.EqualFold(cloud, "AzurePublicCloud"), strings.EqualFold(cloud, "AzureCloud"), cloud == "":
-			return "https://managedhsm.azure.net/", nil
+			return "managedhsm.azure.net", nil
 		case strings.EqualFold(cloud, "AzureChinaCloud"):
 			return "", fmt.Errorf("no HSM endpoint in cloud %s", cloud)
-		case strings.EqualFold(cloud, "AzureGovernmentCloud"):
-			return "", fmt.Errorf("no HSM endpoint in cloud %s", cloud)
+		case strings.EqualFold(cloud, "AzureGovernmentCloud"), strings.EqualFold(cloud, "AzureUSGovernmentCloud"):
+			return "managedhsm.usgovcloudapi.net", nil
 		default:
 			return "", fmt.Errorf("unknown cloud %s", cloud)
 		}

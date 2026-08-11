@@ -68,7 +68,7 @@ func getCredential(config *config.AzureConfig, aadEndpoint string, proxyMode boo
 		}
 
 		if proxyMode {
-			opts.ClientOptions.Transport = &transporter{}
+			opts.Transport = &transporter{}
 		}
 		return azidentity.NewClientSecretCredential(config.TenantID, config.ClientID, config.ClientSecret, opts)
 	}
@@ -93,7 +93,7 @@ func getCredential(config *config.AzureConfig, aadEndpoint string, proxyMode boo
 		}
 
 		if proxyMode {
-			opts.ClientOptions.Transport = &transporter{}
+			opts.Transport = &transporter{}
 		}
 
 		return azidentity.NewClientCertificateCredential(config.TenantID, config.ClientID, []*x509.Certificate{certificate}, privateKey, opts)

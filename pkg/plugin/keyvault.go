@@ -102,12 +102,12 @@ func NewKeyVaultClient(
 
 	aadEndpoint, err := getAadEndpoint(config, proxyMode, proxyAddress, proxyPort)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get aad endpoint: %v", err)
+		return nil, fmt.Errorf("failed to get aad endpoint: %w", err)
 	}
 
 	token, err := auth.GetKeyvaultToken(config, aadEndpoint, proxyMode)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get keyvault token: %v", err)
+		return nil, fmt.Errorf("failed to get keyvault token: %w", err)
 	}
 
 	kvClient, err := azkeys.NewClient(vaultURL, token, &azkeys.ClientOptions{
@@ -120,7 +120,7 @@ func NewKeyVaultClient(
 		},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to create keyvault client: %v", err)
+		return nil, fmt.Errorf("failed to create keyvault client: %w", err)
 	}
 
 	keyIDHash, err := getKeyIDHash(vaultURL, keyName, keyVersion)

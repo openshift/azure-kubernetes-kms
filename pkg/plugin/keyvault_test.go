@@ -188,6 +188,51 @@ func TestGetVaultURL(t *testing.T) {
 	}
 }
 
+func TestGetManagedHSMVaultURL(t *testing.T) {
+	testCases := []struct {
+		name        string
+		cloud       string
+		expectedURL string
+	}{
+		{
+			name:        "empty cloud defaults to Azure public cloud",
+			expectedURL: "https://testhsm.managedhsm.azure.net/",
+		},
+		{
+			name:        "AzureCloud uses the public Managed HSM endpoint",
+			cloud:       "AzureCloud",
+			expectedURL: "https://testhsm.managedhsm.azure.net/",
+		},
+		{
+			name:        "AzurePublicCloud uses the public Managed HSM endpoint",
+			cloud:       "AzurePublicCloud",
+			expectedURL: "https://testhsm.managedhsm.azure.net/",
+		},
+		{
+			name:        "AzureGovernmentCloud uses the government Managed HSM endpoint",
+			cloud:       "AzureGovernmentCloud",
+			expectedURL: "https://testhsm.managedhsm.usgovcloudapi.net/",
+		},
+		{
+			name:        "AzureUSGovernmentCloud uses the government Managed HSM endpoint",
+			cloud:       "AzureUSGovernmentCloud",
+			expectedURL: "https://testhsm.managedhsm.usgovcloudapi.net/",
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			vaultURL, err := getVaultURL("testhsm", true, testCase.cloud)
+			if err != nil {
+				t.Fatalf("expected no error getting Managed HSM URL, got: %v", err)
+			}
+			if vaultURL != testCase.expectedURL {
+				t.Fatalf("expected Managed HSM URL %q, got %q", testCase.expectedURL, vaultURL)
+			}
+		})
+	}
+}
+
 func TestGetKeyIDHash(t *testing.T) {
 	testCases := []struct {
 		name                string

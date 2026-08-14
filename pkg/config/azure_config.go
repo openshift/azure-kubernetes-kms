@@ -10,16 +10,16 @@ import (
 
 // AzureConfig is representing /etc/kubernetes/azure.json.
 type AzureConfig struct {
-	Cloud                       string `json:"cloud" yaml:"cloud"`
-	TenantID                    string `json:"tenantId" yaml:"tenantId"`
-	ClientID                    string `json:"aadClientId" yaml:"aadClientId"`
-	ClientSecret                string `json:"aadClientSecret" yaml:"aadClientSecret"`
+	Cloud                        string `json:"cloud" yaml:"cloud"`
+	TenantID                     string `json:"tenantId" yaml:"tenantId"`
+	ClientID                     string `json:"aadClientId" yaml:"aadClientId"`
+	ClientSecret                 string `json:"aadClientSecret" yaml:"aadClientSecret"`
 	UseWorkloadIdentityExtension bool   `json:"useWorkloadIdentityExtension,omitempty" yaml:"useWorkloadIdentityExtension,omitempty"`
 	UseManagedIdentityExtension  bool   `json:"useManagedIdentityExtension,omitempty" yaml:"useManagedIdentityExtension,omitempty"`
 	UserAssignedIdentityID       string `json:"userAssignedIdentityID,omitempty" yaml:"userAssignedIdentityID,omitempty"`
-	AADClientCertPath           string `json:"aadClientCertPath" yaml:"aadClientCertPath"`
-	AADClientCertPassword       string `json:"aadClientCertPassword" yaml:"aadClientCertPassword"`
-	AADMSIDataPlaneIdentityPath string `json:"aadMSIDataPlaneIdentityPath,omitempty" yaml:"aadMSIDataPlaneIdentityPath,omitempty"`
+	AADClientCertPath            string `json:"aadClientCertPath" yaml:"aadClientCertPath"`
+	AADClientCertPassword        string `json:"aadClientCertPassword" yaml:"aadClientCertPassword"`
+	AADMSIDataPlaneIdentityPath  string `json:"aadMSIDataPlaneIdentityPath,omitempty" yaml:"aadMSIDataPlaneIdentityPath,omitempty"`
 }
 
 // GetAzureConfig returns configs in the azure.json cloud provider file.

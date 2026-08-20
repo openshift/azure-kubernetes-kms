@@ -295,9 +295,13 @@ func getVaultDNSSuffix(managedHSM bool, cloud string) (string, error) {
 		case strings.EqualFold(cloud, "AzurePublicCloud"), strings.EqualFold(cloud, "AzureCloud"), cloud == "":
 			return "managedhsm.azure.net", nil
 		case strings.EqualFold(cloud, "AzureChinaCloud"):
-			return "", fmt.Errorf("no HSM endpoint in cloud %s", cloud)
-		case strings.EqualFold(cloud, "AzureGovernmentCloud"), strings.EqualFold(cloud, "AzureUSGovernmentCloud"):
+			return "managedhsm.azure.cn", nil
+		case strings.EqualFold(cloud, "AzureGovernmentCloud"), strings.EqualFold(cloud, "AzureUSGovernment"), strings.EqualFold(cloud, "AzureUSGovernmentCloud"):
 			return "managedhsm.usgovcloudapi.net", nil
+		case strings.EqualFold(cloud, "AzureGermanCloud"):
+			return "managedhsm.microsoftazure.de", nil
+		case strings.EqualFold(cloud, "AzureBleuCloud"):
+			return "managedhsm.sovcloud-api.fr", nil
 		default:
 			return "", fmt.Errorf("unknown cloud %s", cloud)
 		}
@@ -307,8 +311,12 @@ func getVaultDNSSuffix(managedHSM bool, cloud string) (string, error) {
 		return "vault.azure.net", nil
 	case strings.EqualFold(cloud, "AzureChinaCloud"):
 		return "vault.azure.cn", nil
-	case strings.EqualFold(cloud, "AzureGovernmentCloud"), strings.EqualFold(cloud, "AzureUSGovernmentCloud"):
+	case strings.EqualFold(cloud, "AzureGovernmentCloud"), strings.EqualFold(cloud, "AzureUSGovernment"), strings.EqualFold(cloud, "AzureUSGovernmentCloud"):
 		return "vault.usgovcloudapi.net", nil
+	case strings.EqualFold(cloud, "AzureGermanCloud"):
+		return "vault.microsoftazure.de", nil
+	case strings.EqualFold(cloud, "AzureBleuCloud"):
+		return "vault.sovcloud-api.fr", nil
 	default:
 		return "", fmt.Errorf("unknown cloud %s", cloud)
 	}
@@ -343,8 +351,12 @@ func getAadEndpoint(azureConfig *config.AzureConfig, proxyMode bool, proxyAddres
 		return cloud.AzurePublic.ActiveDirectoryAuthorityHost, nil
 	case strings.EqualFold(azureConfig.Cloud, "AzureChinaCloud"):
 		return cloud.AzureChina.ActiveDirectoryAuthorityHost, nil
-	case strings.EqualFold(azureConfig.Cloud, "AzureGovernmentCloud"):
+	case strings.EqualFold(azureConfig.Cloud, "AzureGovernmentCloud"), strings.EqualFold(azureConfig.Cloud, "AzureUSGovernment"), strings.EqualFold(azureConfig.Cloud, "AzureUSGovernmentCloud"):
 		return cloud.AzureGovernment.ActiveDirectoryAuthorityHost, nil
+	case strings.EqualFold(azureConfig.Cloud, "AzureGermanCloud"):
+		return "https://login.microsoftonline.de/", nil
+	case strings.EqualFold(azureConfig.Cloud, "AzureBleuCloud"):
+		return "https://login.sovcloud-identity.fr/", nil
 	}
 	return "", fmt.Errorf("invalid cloud type %s", azureConfig.Cloud)
 }

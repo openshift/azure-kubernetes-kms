@@ -13,8 +13,8 @@ import (
 )
 
 var (
-	testEnvs       = []string{"", "AZUREPUBLICCLOUD", "AZURECHINACLOUD", "AZUREUSGOVERNMENTCLOUD"}
-	vaultDNSSuffix = []string{"vault.azure.net", "vault.azure.net", "vault.azure.cn", "vault.usgovcloudapi.net"}
+	testEnvs       = []string{"", "AZUREPUBLICCLOUD", "AZURECHINACLOUD", "AZUREUSGOVERNMENTCLOUD", "AZUREGERMANCLOUD", "AZUREBLEUCLOUD"}
+	vaultDNSSuffix = []string{"vault.azure.net", "vault.azure.net", "vault.azure.cn", "vault.usgovcloudapi.net", "vault.microsoftazure.de", "vault.sovcloud-api.fr"}
 )
 
 func TestNewKeyVaultClientError(t *testing.T) {
@@ -55,8 +55,8 @@ func TestNewKeyVaultClientError(t *testing.T) {
 			keyVersion: "262067a9e8ba401aa8a746c5f1a7e147",
 		},
 		{
-			desc:       "managed hsm not available in the azure environment",
-			config:     &config.AzureConfig{ClientID: "clientid", ClientSecret: "clientsecret", Cloud: "AzureGermanCloud"},
+			desc:       "unknown azure environment",
+			config:     &config.AzureConfig{ClientID: "clientid", ClientSecret: "clientsecret", Cloud: "AzureUnknownCloud"},
 			vaultName:  "testkv",
 			keyName:    "key1",
 			keyVersion: "262067a9e8ba401aa8a746c5f1a7e147",
@@ -214,9 +214,29 @@ func TestGetManagedHSMVaultURL(t *testing.T) {
 			expectedURL: "https://testhsm.managedhsm.usgovcloudapi.net/",
 		},
 		{
+			name:        "AzureUSGovernment uses the government Managed HSM endpoint",
+			cloud:       "AzureUSGovernment",
+			expectedURL: "https://testhsm.managedhsm.usgovcloudapi.net/",
+		},
+		{
 			name:        "AzureUSGovernmentCloud uses the government Managed HSM endpoint",
 			cloud:       "AzureUSGovernmentCloud",
 			expectedURL: "https://testhsm.managedhsm.usgovcloudapi.net/",
+		},
+		{
+			name:        "AzureChinaCloud uses the China Managed HSM endpoint",
+			cloud:       "AzureChinaCloud",
+			expectedURL: "https://testhsm.managedhsm.azure.cn/",
+		},
+		{
+			name:        "AzureGermanCloud uses the German Managed HSM endpoint",
+			cloud:       "AzureGermanCloud",
+			expectedURL: "https://testhsm.managedhsm.microsoftazure.de/",
+		},
+		{
+			name:        "AzureBleuCloud uses the Bleu Managed HSM endpoint",
+			cloud:       "AzureBleuCloud",
+			expectedURL: "https://testhsm.managedhsm.sovcloud-api.fr/",
 		},
 	}
 
@@ -228,6 +248,66 @@ func TestGetManagedHSMVaultURL(t *testing.T) {
 			}
 			if vaultURL != testCase.expectedURL {
 				t.Fatalf("expected Managed HSM URL %q, got %q", testCase.expectedURL, vaultURL)
+			}
+		})
+	}
+}
+
+func TestGetAADEndpoint(t *testing.T) {
+	testCases := []struct {
+		name             string
+		cloud            string
+		expectedEndpoint string
+	}{
+		{
+			name:             "empty cloud defaults to Azure public cloud",
+			expectedEndpoint: "https://login.microsoftonline.com/",
+		},
+		{
+			name:             "AzurePublicCloud uses the public authority",
+			cloud:            "AzurePublicCloud",
+			expectedEndpoint: "https://login.microsoftonline.com/",
+		},
+		{
+			name:             "AzureChinaCloud uses the China authority",
+			cloud:            "AzureChinaCloud",
+			expectedEndpoint: "https://login.chinacloudapi.cn/",
+		},
+		{
+			name:             "AzureGovernmentCloud uses the government authority",
+			cloud:            "AzureGovernmentCloud",
+			expectedEndpoint: "https://login.microsoftonline.us/",
+		},
+		{
+			name:             "AzureUSGovernment uses the government authority",
+			cloud:            "AzureUSGovernment",
+			expectedEndpoint: "https://login.microsoftonline.us/",
+		},
+		{
+			name:             "AzureUSGovernmentCloud uses the government authority",
+			cloud:            "AzureUSGovernmentCloud",
+			expectedEndpoint: "https://login.microsoftonline.us/",
+		},
+		{
+			name:             "AzureGermanCloud uses the German authority",
+			cloud:            "AzureGermanCloud",
+			expectedEndpoint: "https://login.microsoftonline.de/",
+		},
+		{
+			name:             "AzureBleuCloud uses the Bleu authority",
+			cloud:            "AzureBleuCloud",
+			expectedEndpoint: "https://login.sovcloud-identity.fr/",
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			endpoint, err := getAadEndpoint(&config.AzureConfig{Cloud: testCase.cloud}, false, "", 0)
+			if err != nil {
+				t.Fatalf("expected no error getting AAD endpoint, got: %v", err)
+			}
+			if endpoint != testCase.expectedEndpoint {
+				t.Fatalf("expected AAD endpoint %q, got %q", testCase.expectedEndpoint, endpoint)
 			}
 		})
 	}

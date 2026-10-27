@@ -6,9 +6,19 @@
 package plugin
 
 import (
+	"bytes"
+	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"strings"
 	"testing"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
+	"github.com/Azure/azure-sdk-for-go/sdk/security/keyvault/azkeys"
 	"github.com/Azure/kubernetes-kms/pkg/config"
 )
 
@@ -135,6 +145,92 @@ func TestNewKeyVaultClient(t *testing.T) {
 			}
 			if kvClient == nil {
 				t.Fatalf("NewKeyVaultClient() expected kv client to not be nil")
+			}
+		})
+	}
+}
+
+func TestKeyVaultClientEncryptKeyIDCasing(t *testing.T) {
+	tests := []struct {
+		name          string
+		vaultURL      string
+		responseKeyID string
+		expectedError bool
+	}{
+		{
+			name:          "mixed case configured vault matches lowercase response",
+			vaultURL:      "https://ExAmPlE.vault.azure.net/",
+			responseKeyID: "https://example.vault.azure.net/keys/mykey/abcd",
+		},
+		{
+			name:          "lowercase configured vault matches mixed case response",
+			vaultURL:      "https://example.vault.azure.net/",
+			responseKeyID: "https://ExAmPlE.vault.azure.net/keys/MyKey/ABCD",
+		},
+		{
+			name:          "different key version is still rejected",
+			vaultURL:      "https://ExAmPlE.vault.azure.net/",
+			responseKeyID: "https://example.vault.azure.net/keys/mykey/efgh",
+			expectedError: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			keyIDHash, err := getKeyIDHash(test.vaultURL, "mykey", "abcd")
+			if err != nil {
+				t.Fatalf("getKeyIDHash() failed: %v", err)
+			}
+
+			body, err := json.Marshal(map[string]string{
+				"kid":   test.responseKeyID,
+				"value": base64.RawURLEncoding.EncodeToString([]byte("ciphertext")),
+			})
+			if err != nil {
+				t.Fatalf("failed to marshal encryption response: %v", err)
+			}
+
+			// Mock client that returns our predefined response
+			baseClient, err := azkeys.NewClient(test.vaultURL, nil, &azkeys.ClientOptions{
+				ClientOptions: azcore.ClientOptions{
+					PerCallPolicies: []policy.Policy{policyFunc(func(req *policy.Request) (*http.Response, error) {
+						return &http.Response{
+							StatusCode: http.StatusOK,
+							Header:     http.Header{"Content-Type": []string{"application/json"}},
+							Body:       io.NopCloser(bytes.NewReader(body)),
+							Request:    req.Raw(),
+						}, nil
+					})},
+				},
+			})
+			if err != nil {
+				t.Fatalf("azkeys.NewClient() failed: %v", err)
+			}
+
+			client := &KeyVaultClient{
+				baseClient: baseClient,
+				keyName:    "mykey",
+				keyVersion: "abcd",
+				keyIDHash:  keyIDHash,
+			}
+
+			result, err := client.Encrypt(context.Background(), []byte("plaintext"), azkeys.EncryptionAlgorithmRSAOAEP256)
+			if test.expectedError {
+				if err == nil || !strings.Contains(err.Error(), "key id initialized does not match") {
+					t.Fatalf("expected key ID mismatch error, got: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Encrypt() failed: %v", err)
+			}
+
+			const expectedHash = "ec3e6befa79c7dc9a37cac2a8a67cbf0e7fcacdcfc5cf56b463fc80ffdb783f3"
+			if result.KeyID != expectedHash {
+				t.Errorf("expected key ID hash %s, got %s", expectedHash, result.KeyID)
+			}
+			if !bytes.Equal(result.Ciphertext, []byte("ciphertext")) {
+				t.Errorf("expected ciphertext %q, got %q", "ciphertext", result.Ciphertext)
 			}
 		})
 	}
@@ -324,11 +420,19 @@ func TestGetKeyIDHash(t *testing.T) {
 		expectedErrorString string
 	}{
 		{
-			name:          "valid hash",
+			name:          "valid hash, all components have lowercase letters",
 			vaultURL:      "https://example.vault.azure.net/",
 			keyName:       "mykey",
-			keyVersion:    "ABCD",
-			expectedHash:  "567d783db3043fe298fe0d9eeedb0029a3815cdd4fe4b059d018c91e6acffe3b",
+			keyVersion:    "abcd",
+			expectedHash:  "ec3e6befa79c7dc9a37cac2a8a67cbf0e7fcacdcfc5cf56b463fc80ffdb783f3",
+			expectedError: false,
+		},
+		{
+			name:          "valid hash, uppercase letters included in key version",
+			vaultURL:      "https://example.vault.azure.net/",
+			keyName:       "mykey",
+			keyVersion:    "EFGH",
+			expectedHash:  "cb56e0330a7ccb5e4fc2decddc6293b50478ad2d2d219c1f1b72dc8de2795f23",
 			expectedError: false,
 		},
 		{

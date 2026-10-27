@@ -166,7 +166,9 @@ func (kvc *KeyVaultClient) Encrypt(
 		return nil, fmt.Errorf("failed to encrypt, error: %w", err)
 	}
 
-	if kvc.keyIDHash != fmt.Sprintf("%x", sha256.Sum256([]byte(*result.KID))) {
+	// https://learn.microsoft.com/en-us/azure/key-vault/general/about-keys-secrets-certificates#object-identifiers
+	// "Key Vault object identifiers are also valid URLs, but always compare them as case-insensitive strings."
+	if kvc.keyIDHash != hashKeyID(string(*result.KID)) {
 		return nil, fmt.Errorf(
 			"key id initialized does not match with the key id from encryption result, expected: %s, got: %s",
 			kvc.keyIDHash,
@@ -339,7 +341,11 @@ func getKeyIDHash(vaultURL, keyName, keyVersion string) (string, error) {
 		},
 	).String()
 
-	return fmt.Sprintf("%x", sha256.Sum256([]byte(keyID))), nil
+	return hashKeyID(keyID), nil
+}
+
+func hashKeyID(keyID string) string {
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(strings.ToLower(keyID))))
 }
 
 func getAadEndpoint(azureConfig *config.AzureConfig, proxyMode bool, proxyAddress string, proxyPort int) (string, error) {
